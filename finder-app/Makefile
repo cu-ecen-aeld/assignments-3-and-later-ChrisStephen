@@ -1,7 +1,11 @@
 CROSS_COMPILE ?=
+GCC ?= $(CROSS_COMPILE)gcc
+
+.PHONY: all
+all: writer
 
 writer: writer.c
-	$(CROSS_COMPILE)gcc writer.c -o writer
+	$(GCC) writer.c -o writer
 
 .PHONY: clean
 clean:
