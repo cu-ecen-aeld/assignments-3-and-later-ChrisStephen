@@ -1,11 +1,13 @@
 CROSS_COMPILE ?=
-GCC ?= $(CROSS_COMPILE)gcc
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -g -Wall -Werror
+LDFLAGS ?= -lpthread -lrt
 
 .PHONY: all
 all: aesdsocket
 
 aesdsocket: aesdsocket.c
-	$(GCC) aesdsocket.c -o aesdsocket
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 .PHONY: clean
 clean:

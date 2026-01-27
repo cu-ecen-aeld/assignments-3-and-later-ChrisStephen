@@ -298,13 +298,13 @@ void *timestamp_handler(void *argument)
 		// Create timestamp
 		characters = strftime(string, sizeof(string), format, current);
 		// Print timestamp
-		int bytes = write(fd, string, characters);
+		write(fd, string, characters);
 		// Unlock mutex
 		pthread_mutex_unlock(&mutex_fd);
 
 	}
 	// Close file
-	int rc = close(fd);
+	close(fd);
 	// Mark node as complete
 	node->complete = 1;
 	// Exit thread
