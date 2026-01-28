@@ -29,10 +29,30 @@
 struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct aesd_circular_buffer *buffer,
             size_t char_offset, size_t *entry_offset_byte_rtn )
 {
-    /**
-    * TODO: implement per description
-    */
-    return NULL;
+	// Capture entry containing offset, defaults as NULL
+	struct aesd_buffer_entry *entry = NULL;
+	// Compute delta indexes, accounting for wrap around
+	uint8_t indexes = buffer->full ? AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED : (buffer->in_offs - buffer->out_offs) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+	// Loop through buffer entries
+	for (uint8_t index = 0; index < indexes; index += 1)
+	{
+		if (buffer->entry[(buffer->out_offs + index) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size <= char_offset)
+		{
+			// Offset exceeds entry size, so drop offset by entry size
+			char_offset -= buffer->entry[(buffer->out_offs + index) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size;
+		}
+		else
+		{
+			// Entry size exceeds offset, so capture entry with offset
+			entry = &buffer->entry[(buffer->out_offs + index) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED];
+			// Entry offset is remaining offset
+			*entry_offset_byte_rtn = char_offset;
+			// Break loop through buffer entries
+			break;
+		}
+	}
+	// Return entry pointer
+	return entry;
 }
 
 /**
@@ -44,9 +64,20 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 */
 void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
-    /**
-    * TODO: implement per description
-    */
+	// Assign from pointer to buffer entry
+	memcpy(&buffer->entry[buffer->in_offs], add_entry, sizeof(struct aesd_buffer_entry));
+	// Update in offset
+	buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+	// Check buffer full flag
+	if (buffer->full)
+	{
+		// Update out offset
+		buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+	}
+	// Update buffer full flag
+	buffer->full = (buffer->in_offs == buffer->out_offs);
+	// Return void
+	return;
 }
 
 /**
