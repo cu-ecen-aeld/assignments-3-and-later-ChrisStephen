@@ -14,6 +14,16 @@
 // Instructor recommended queue implementation
 #include "queue.h"
 
+#ifndef USE_AESD_CHAR_DEVICE
+// Default as aesd character device
+#define USE_ASED_CHAR_DEVICE 1
+// Redirect reads/writes at /dev/aesdchar
+#define AESD_FILENAME "/dev/aesdchar"
+#else
+// Direct reads/writes at /var/tmp/aesdsocket
+#define AESD_FILENAME "/var/tmp/aesdsocketdata"
+#endif
+
 // Thread Data Prototype
 typedef struct thread_data_s thread_data_t;
 // Thread Data Type
@@ -145,11 +155,11 @@ void *thread_handler(void *argument)
 				// Track number of bytes read/write
 				int bytes;
 				// Open file (create as necessary, write-only, append mode)
-				fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_WRONLY | O_APPEND, 0666);
+				fd = open(AESD_FILENAME, O_CREAT | O_WRONLY | O_APPEND, 0666);
 				// Check for error condition
 				if (fd == -1)
 				{
-					syslog(LOG_DEBUG, "write /var/tmp/aesdsocketdata open() error");
+					syslog(LOG_DEBUG, "write aesd_filename open() error");
 					// Unlock mutex
 					pthread_mutex_unlock(&mutex_fd);
 					// Exit as result of error condition
@@ -171,7 +181,7 @@ void *thread_handler(void *argument)
 				// Check for error condition
 				if (rc != 0)
 				{
-					syslog(LOG_DEBUG, "write /var/tmp/aesdsocketdata close() error");
+					syslog(LOG_DEBUG, "write aesd_filename close() error");
 					// Unlock mutex
 					pthread_mutex_unlock(&mutex_fd);
 					// Exit as result of error condition
@@ -189,11 +199,11 @@ void *thread_handler(void *argument)
 					break;
 				}
 				// Open file (read-only)
-				fd = open("/var/tmp/aesdsocketdata", O_RDONLY, 0666);
+				fd = open(AESD_FILENAME, O_RDONLY, 0666);
 				// Check for error condition
 				if (fd == -1)
 				{
-					syslog(LOG_DEBUG, "read /var/tmp/aesdsocketdata open() error");
+					syslog(LOG_DEBUG, "read aesd_filename open() error");
 					// Unlock mutex
 					pthread_mutex_unlock(&mutex_fd);
 					// Exit as result of error condition
@@ -202,7 +212,7 @@ void *thread_handler(void *argument)
 				// Chunk message string as 1024 characters
 				bytes = 1024;
 				// Loop until EOF or signal event asserted
-				while ((bytes == 1024) && (signal_event == 0))
+				while ((bytes > 0) && (signal_event == 0))
 				{
 					// Read string
 					bytes = read(fd, message, 1024);
@@ -232,7 +242,7 @@ void *thread_handler(void *argument)
 				// Check for error condition
 				if (rc != 0)
 				{
-					syslog(LOG_DEBUG, "read /var/tmp/aesdsocketdata close() error");
+					syslog(LOG_DEBUG, "read aesd_filename close() error");
 					// Unlock mutex
 					pthread_mutex_unlock(&mutex_fd);
 					// Exit as result of error condition
@@ -252,6 +262,8 @@ void *thread_handler(void *argument)
 		free(buffer);
 		// Log message with syslog that program closed connection
 		syslog(LOG_INFO, "Closed connection from %d.%d.%d.%d", node->address.sa_data[2], node->address.sa_data[3], node->address.sa_data[4], node->address.sa_data[5]);
+		// Connection handled so break loop
+		break;
 	}
 	// Free rollover
 	free(rollover);
@@ -283,7 +295,7 @@ void *timestamp_handler(void *argument)
 	// Timestamp characters
 	size_t characters;
 	// Open file (create as necessary, append mode)
-	int fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_WRONLY | O_APPEND, 0666);
+	int fd = open(AESD_FILENAME, O_CREAT | O_WRONLY | O_APPEND, 0666);
 	// Loop until signal event asserted
 	while (signal_event == 0)
 	{
@@ -477,6 +489,7 @@ int main(int argc, char **argv)
 	SLIST_HEAD(linked_list_s, thread_data_s) base_node;
 	// Initialize base node
 	SLIST_INIT(&base_node);
+#if defined(USE_AESD_CHAR_DEVICE) && (USE_AESD_CHAR_DEVICE != 1)
 	// Create new linked list node
 	thread_data_t *timestamp_node = malloc(sizeof(thread_data_t));
 	// Check for error condition
@@ -494,6 +507,7 @@ int main(int argc, char **argv)
 	pthread_create(&timestamp_node->id, NULL, timestamp_handler, (void *)timestamp_node);
 	// Insert node to linked list
 	SLIST_INSERT_HEAD(&base_node, timestamp_node, nodes);
+#endif
 	// Track socket address information
 	struct sockaddr address = { 0 };
 	// Track socket address length
@@ -588,7 +602,9 @@ int main(int argc, char **argv)
 		// Free linked list node
 		free(current_node);
 	}
-	// Remove /var/tmp/aesdsocketdata
-	remove("/var/tmp/aesdsocketdata");
+#if defined(USE_AESD_CHAR_DEVICE) && (USE_AESD_CHAR_DEVICE != 1)
+	// Remove aesd_filename
+	remove(AESD_FILENAME);
+#endif
 	return 0;
 }
