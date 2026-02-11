@@ -22,6 +22,7 @@
 #include <linux/uaccess.h>
 #include "aesdchar.h"
 #include "aesd-circular-buffer.h"
+#include "aesd_ioctl.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -180,12 +181,146 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+	// Grab aesd device
+	struct aesd_dev *device = filp->private_data;
+	// Initialize position as zero
+	loff_t fpos = 0;
+	// Lock mutex
+	int rc = mutex_lock_interruptible(&device->mtx);
+	// Check error conditions
+	if (rc != 0)
+	{
+		// Error condition
+		return -EINVAL;
+	}
+	// Match whence positional type
+	switch (whence)
+	{
+		case SEEK_SET:
+			// Assign position as specified offset
+			fpos = offset;
+			// Case complete
+			break;
+		case SEEK_CUR:
+			// Bump position by specified offset
+			fpos = filp->f_pos + offset;
+			// Case complete
+			break;
+		case SEEK_END:
+			// Initialize size as zero
+			size_t size = 0;
+			// Compute number of entries for circular buffer
+			uint8_t indexes = device->cb.full ? AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED : (device->cb.in_offs - device->cb.out_offs) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+			// Loop through entries of circular buffer
+			for (uint8_t index = 0; index < indexes; index += 1)
+			{
+				// Update size with circular buffer entry size
+				size += device->cb.entry[(device->cb.out_offs + index) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size;
+			}
+			// Update position as offset beyond size
+			fpos = size + offset;
+			// Case complete
+			break;
+		default:
+			// Default case error condition
+			fpos = -EINVAL;
+			// Case complete
+			break;
+	}
+	// Check that position is positive not negative
+	if (fpos >= 0)
+	{
+		// Update file position
+		filp->f_pos = fpos;
+	}
+	// Unlock mutex
+	mutex_unlock(&device->mtx);
+	// Exit with updated position
+	return fpos;
+}
+
+long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	// Grab aesd device
+	struct aesd_dev *device = filp->private_data;
+	// Initialize position as zero
+	long fpos = 0;
+	// Match ioctl command
+	switch (cmd)
+	{
+		case AESDCHAR_IOCSEEKTO:
+			// Initialize result check as zero
+			int rc = 0;
+			// AESD seek metadata
+			struct aesd_seekto st;
+			// Move data from user space to kernel space
+			rc = copy_from_user(&st, (const void __user *)arg, sizeof(struct aesd_seekto));
+			// Check error conditions
+			if (rc != 0)
+			{
+				// Error condition
+				return -EINVAL;
+			}
+			// Lock mutex
+			rc = mutex_lock_interruptible(&device->mtx);
+			// Check error conditions
+			if (rc != 0)
+			{
+				// Error condition
+				return -EINVAL;
+			}
+			// Compute number of entries for circular buffer
+			uint32_t indexes = device->cb.full ? AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED : (device->cb.in_offs - device->cb.out_offs) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+			// Check that specified index does not exceed indexes
+			if (st.write_cmd >= indexes)
+			{
+				// Unlock mutex
+				mutex_unlock(&device->mtx);
+				// Error condition
+				return -EINVAL;
+			}
+			// Loop through indexes
+			for (uint32_t index = 0; index < st.write_cmd; index += 1)
+			{
+				// Bump position by size associated with index
+				fpos += device->cb.entry[(device->cb.out_offs + index) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size;
+			}
+			// Check that specified offset does not exceed size
+			if (st.write_cmd_offset >= device->cb.entry[(device->cb.out_offs + st.write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size)
+			{
+				// Unlock mutex
+				mutex_unlock(&device->mtx);
+				// Error condition
+				return -EINVAL;
+			}
+			// Bump position by offset
+			fpos += st.write_cmd_offset;
+			// Update file position
+			filp->f_pos = fpos;
+			// Unlock mutex
+			mutex_unlock(&device->mtx);
+			// Case complete
+			break;
+		default:
+			// Default case error condition
+			fpos = -EINVAL;
+			// Case complete
+			break;
+	}
+	// Exit with updated position
+	return fpos;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek = aesd_llseek,
+    .unlocked_ioctl = aesd_unlocked_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)

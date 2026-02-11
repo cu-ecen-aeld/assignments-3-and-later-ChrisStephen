@@ -11,6 +11,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../aesd-char-driver/aesd_ioctl.h"
+
 // Instructor recommended queue implementation
 #include "queue.h"
 
@@ -54,6 +56,127 @@ void signal_handler(int signal)
 	// Assert signal event
 	signal_event = 1;
 	return;
+}
+
+// IOCTL Handler
+// 	Arguments:
+// 		node --- node associated with thread
+// 		buffer --- buffer associated with socket
+// 	Returns:
+// 		status (success or failure)
+int ioctl_handler(const thread_data_t * const node, const char * const buffer)
+{
+	// Initialize result check as zero
+	int rc = 0;
+	// Find colon position
+	const char * x = strchr(buffer, ':');
+	// Check for error condition
+	if (x == NULL)
+	{
+		syslog(LOG_DEBUG, ":X not found for ioctl sequence");
+		// Exit as result of error condition
+		return -1;
+	}
+	// X follows colon
+	x += 1;
+	// Find comma position
+	const char * y = strchr(buffer, ',');
+	// Check for error condition
+	if (y == NULL)
+	{
+		syslog(LOG_DEBUG, ",Y not found for ioctl sequence");
+		// Exit as result of error condition
+		return -1;
+	}
+	// Y follows comma
+	y += 1;
+	// Find newline position
+	const char * const n = strchr(buffer, '\n');
+	// Check for error condition
+	if (n == NULL)
+	{
+		syslog(LOG_DEBUG, "newline not found for ioctl sequence");
+		// Exit as result of error condition
+		return -1;
+	}
+	// AESD seek metadata
+	struct aesd_seekto st;
+	// Ascii representation for 64-bit integer bounded as string with 20 characters + null terminator
+	char ascii[21];
+	// Fill ascii buffer with null terminator for string operators
+	memset(ascii, 0, 21);
+	// Ascii for X
+	strncpy(ascii, x, (y-x)-1);
+	// Convert X from ascii to integer
+	st.write_cmd = atoi(x);
+	// Fill ascii buffer with null terminator for string operators
+	memset(ascii, 0, 21);
+	// Ascii for Y
+	strncpy(ascii, y, n-y);
+	// Convert Y from ascii to integer
+	st.write_cmd_offset = atoi(ascii);
+	// Open file (read/write)
+	int fd = open(AESD_FILENAME, O_RDWR, 0666);
+	// Check for error condition
+	if (fd == -1)
+	{
+		syslog(LOG_DEBUG, "ioctl aesd_filename open() error");
+		// Exit as result of error condition
+		return -1;
+	}
+	rc = ioctl(fd, AESDCHAR_IOCSEEKTO, &st);
+	if (rc < 0)
+	{
+		syslog(LOG_DEBUG, "ioctl() error");
+		// Exit as result of error condition
+		return -1;
+	}
+	// Allocate message
+	char *message = malloc(1024 * sizeof(char));
+	// Check for error condition
+	if (message == NULL)
+	{
+		syslog(LOG_DEBUG, "message malloc() error");
+		// Exit as result of error condition
+		return -1;
+	}
+	// Chunk message string as 1024 characters
+	int bytes = 1024;
+	// Loop until EOF or signal event asserted
+	while ((bytes > 0) && (signal_event == 0))
+	{
+		// Read string
+		bytes = read(fd, message, 1024);
+		// Check for error condition
+		if (bytes == -1)
+		{
+			syslog(LOG_DEBUG, "ioctl read error");
+			// Exit as result of error condition
+			return -1;
+		}
+		// Write string
+		int characters = send(node->fd, message, bytes, 0);
+		// Check for error condition
+		if (characters == -1)
+		{
+			syslog(LOG_DEBUG, "ioctl write error");
+			// Exit as result of error condition
+			return -1;
+		}
+	}
+	// Close file
+	rc = close(fd);
+	// Check for error condition
+	if (rc != 0)
+	{
+		syslog(LOG_DEBUG, "ioctl aesd_filename close() error");
+		// Exit as result of error condition
+		return -1;
+	}
+	// Free message
+	free(message);
+	// Exit as result of completion
+	return 0;
 }
 
 // Thread Handler
@@ -150,106 +273,126 @@ void *thread_handler(void *argument)
 			{
 				// Status check
 				int rc = 0;
-				// Track descriptor
-				int fd;
-				// Track number of bytes read/write
-				int bytes;
-				// Open file (create as necessary, write-only, append mode)
-				fd = open(AESD_FILENAME, O_CREAT | O_WRONLY | O_APPEND, 0666);
-				// Check for error condition
-				if (fd == -1)
+				// Compare with IOCTL sequence
+				rc = strncmp(spillover, "AESDCHAR_IOCSEEKTO", 18);
+				// Check whether IOCTL sequence found
+				if (rc == 0)	// IOCTL sequence found
 				{
-					syslog(LOG_DEBUG, "write aesd_filename open() error");
-					// Unlock mutex
-					pthread_mutex_unlock(&mutex_fd);
-					// Exit as result of error condition
-					break;
+					// Handle IOCTL sequence
+					rc = ioctl_handler(node, spillover);
+					// Check for error condition
+					if (rc != 0)
+					{
+						syslog(LOG_DEBUG, "ioctl_handler() error");
+						// Unlock mutex
+						pthread_mutex_unlock(&mutex_fd);
+						// Exit as result of error condition
+						break;
+					}
 				}
-				// Write string
-				bytes = write(fd, spillover, (newline - spillover) + 1);
-				// Check for error condition
-				if (bytes == -1)
+				else		// IOCTL sequence not found
 				{
-					syslog(LOG_DEBUG, "write() error");
-					// Unlock mutex
-					pthread_mutex_unlock(&mutex_fd);
-					// Exit as result of error condition
-					break;
-				}
-				// Close file
-				rc = close(fd);
-				// Check for error condition
-				if (rc != 0)
-				{
-					syslog(LOG_DEBUG, "write aesd_filename close() error");
-					// Unlock mutex
-					pthread_mutex_unlock(&mutex_fd);
-					// Exit as result of error condition
-					break;
-				}
-				// Allocate message
-				char *message = malloc(1024 * sizeof(char));
-				// Check for error condition
-				if (message == NULL)
-				{
-					syslog(LOG_DEBUG, "message malloc() error");
-					// Unlock mutex
-					pthread_mutex_unlock(&mutex_fd);
-					// Exit as result of error condition
-					break;
-				}
-				// Open file (read-only)
-				fd = open(AESD_FILENAME, O_RDONLY, 0666);
-				// Check for error condition
-				if (fd == -1)
-				{
-					syslog(LOG_DEBUG, "read aesd_filename open() error");
-					// Unlock mutex
-					pthread_mutex_unlock(&mutex_fd);
-					// Exit as result of error condition
-					break;
-				}
-				// Chunk message string as 1024 characters
-				bytes = 1024;
-				// Loop until EOF or signal event asserted
-				while ((bytes > 0) && (signal_event == 0))
-				{
-					// Read string
-					bytes = read(fd, message, 1024);
+					// Track descriptor
+					int fd;
+					// Track number of bytes read/write
+					int bytes;
+					// Open file (create as necessary, write-only, append mode)
+					fd = open(AESD_FILENAME, O_CREAT | O_WRONLY | O_APPEND, 0666);
+					// Check for error condition
+					if (fd == -1)
+					{
+						syslog(LOG_DEBUG, "write aesd_filename open() error");
+						// Unlock mutex
+						pthread_mutex_unlock(&mutex_fd);
+						// Exit as result of error condition
+						break;
+					}
+					// Write string
+					bytes = write(fd, spillover, (newline - spillover) + 1);
 					// Check for error condition
 					if (bytes == -1)
 					{
-						syslog(LOG_DEBUG, "read() error");
+						syslog(LOG_DEBUG, "write() error");
 						// Unlock mutex
 						pthread_mutex_unlock(&mutex_fd);
 						// Exit as result of error condition
 						break;
 					}
-					// Check number of characters sent
-					int characters = send(node->fd, message, bytes, 0);
+					// Close file
+					rc = close(fd);
 					// Check for error condition
-					if (characters == -1)
+					if (rc != 0)
 					{
-						syslog(LOG_DEBUG, "send() error");
+						syslog(LOG_DEBUG, "write aesd_filename close() error");
 						// Unlock mutex
 						pthread_mutex_unlock(&mutex_fd);
 						// Exit as result of error condition
 						break;
 					}
+					// Allocate message
+					char *message = malloc(1024 * sizeof(char));
+					// Check for error condition
+					if (message == NULL)
+					{
+						syslog(LOG_DEBUG, "message malloc() error");
+						// Unlock mutex
+						pthread_mutex_unlock(&mutex_fd);
+						// Exit as result of error condition
+						break;
+					}
+					// Open file (read-only)
+					fd = open(AESD_FILENAME, O_RDONLY, 0666);
+					// Check for error condition
+					if (fd == -1)
+					{
+						syslog(LOG_DEBUG, "read aesd_filename open() error");
+						// Unlock mutex
+						pthread_mutex_unlock(&mutex_fd);
+						// Exit as result of error condition
+						break;
+					}
+					// Chunk message string as 1024 characters
+					bytes = 1024;
+					// Loop until EOF or signal event asserted
+					while ((bytes > 0) && (signal_event == 0))
+					{
+						// Read string
+						bytes = read(fd, message, 1024);
+						// Check for error condition
+						if (bytes == -1)
+						{
+							syslog(LOG_DEBUG, "read() error");
+							// Unlock mutex
+							pthread_mutex_unlock(&mutex_fd);
+							// Exit as result of error condition
+							break;
+						}
+						// Check number of characters sent
+						int characters = send(node->fd, message, bytes, 0);
+						// Check for error condition
+						if (characters == -1)
+						{
+							syslog(LOG_DEBUG, "send() error");
+							// Unlock mutex
+							pthread_mutex_unlock(&mutex_fd);
+							// Exit as result of error condition
+							break;
+						}
+					}
+					// Close file
+					rc = close(fd);
+					// Check for error condition
+					if (rc != 0)
+					{
+						syslog(LOG_DEBUG, "read aesd_filename close() error");
+						// Unlock mutex
+						pthread_mutex_unlock(&mutex_fd);
+						// Exit as result of error condition
+						break;
+					}
+					// Free message
+					free(message);
 				}
-				// Close file
-				rc = close(fd);
-				// Check for error condition
-				if (rc != 0)
-				{
-					syslog(LOG_DEBUG, "read aesd_filename close() error");
-					// Unlock mutex
-					pthread_mutex_unlock(&mutex_fd);
-					// Exit as result of error condition
-					break;
-				}
-				// Free message
-				free(message);
 				// Update spillover as character following newline
 				spillover = newline + 1;
 			}
